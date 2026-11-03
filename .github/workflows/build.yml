@@ -42,5 +42,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" dist/세금계산서.exe dist/홈택스발급.exe `
+          # 릴리스는 한글 파일 이름을 못 올려서 영어 이름으로 (받을 때 다시 한글로 바꿈)
+          Copy-Item dist/세금계산서.exe dist/invoice-app.exe
+          Copy-Item dist/홈택스발급.exe dist/hometax-issuer.exe
+          gh release create "${{ github.ref_name }}" dist/invoice-app.exe dist/hometax-issuer.exe `
             --title "${{ github.ref_name }}" --notes "자동 빌드"

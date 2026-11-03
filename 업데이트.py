@@ -10,6 +10,8 @@ import urllib.request
 from 버전 import 버전, 저장소
 
 받을파일 = ("세금계산서.exe", "홈택스발급.exe")
+# 깃허브 릴리스에는 영어 이름으로 올라가 있음 → 받아서 한글 이름으로
+릴리스_이름 = {"invoice-app.exe": "세금계산서.exe", "hometax-issuer.exe": "홈택스발급.exe"}
 
 
 def _ver(s):
@@ -33,7 +35,7 @@ def 새버전_확인(token):
     tag = rel.get("tag_name", "")
     if _ver(tag) <= _ver(버전):
         return None, None
-    assets = {a["name"]: a["url"] for a in rel.get("assets", []) if a.get("name") in 받을파일}
+    assets = {릴리스_이름[a["name"]]: a["url"] for a in rel.get("assets", []) if a.get("name") in 릴리스_이름}
     if set(assets) != set(받을파일):
         return None, None
     return tag, assets
