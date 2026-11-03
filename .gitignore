@@ -8,6 +8,7 @@
 !거래처장부.py
 !홈택스열기.py
 !업데이트.py
+!보안저장.py
 !버전.py
 !.github/
 !.github/workflows/
@@ -25,3 +26,4 @@
 *.zip
 *token*
 *.env
+*.dat

@@ -31,20 +31,30 @@ def set_fonts(screen_h):
 
 설정파일 = os.path.join(HERE, "설정.json")
 기본설정 = {"아이디": "", "비밀번호": "", "주민번호_앞6": "", "주민번호_뒤1": "",
-         "이름": "", "생년월일": "", "휴대폰_뒷자리": "", "상호": "", "업데이트_토큰": ""}  # 실제 값은 설정.json
+         "이름": "", "생년월일": "", "휴대폰_뒷자리": "", "상호": ""}  # 실제 값은 설정.json (암호화)
+
+import 보안저장
 
 
 def 설정_읽기():
-    s = dict(기본설정)
-    try:
-        s.update(json.load(open(설정파일, encoding="utf-8")))
-    except Exception:
-        pass
+    s, 못푼것 = 보안저장.설정_읽기(설정파일, 기본설정)
+    s["_못푼것"] = 못푼것
     return s
 
 
 def 설정_쓰기(s):
-    json.dump(s, open(설정파일, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    보안저장.설정_쓰기(설정파일, {k: v for k, v in s.items() if not k.startswith("_")})
+
+
+def 보안카드_상태():
+    """(칸 수, 문제 설명)"""
+    try:
+        card = 보안저장.보안카드_읽기(HERE)
+    except 보안저장.풀기실패:
+        return 0, "다른 컴퓨터에서 저장한 보안카드라 이 컴퓨터에서는 못 읽어요. 다시 넣어 주세요."
+    except Exception as e:
+        return 0, f"보안카드를 못 읽었어요 ({str(e)[:40]})"
+    return len(card), ""
 
 
 def 제목():
@@ -85,6 +95,9 @@ def 점검_목록():
         out.append((False, "홈택스에 접속이 안 돼요", f"인터넷 연결을 확인해 주세요. ({str(e)[:60]})"))
     # 3) 설정
     cfg = 설정_읽기()
+    if cfg.get("_못푼것"):
+        out.append((False, "설정을 이 컴퓨터에서 읽을 수 없어요",
+                    "다른 컴퓨터에서 저장한 설정이에요. [⚙ 설정]에서 다시 넣어 주세요."))
     if cfg.get("아이디") and cfg.get("비밀번호"):
         out.append((True, "홈택스 아이디·비밀번호 설정됨", ""))
     else:
@@ -94,12 +107,9 @@ def 점검_목록():
     out.append((not need, "인증용 정보(주민번호·이름·생년월일·휴대폰)" + (" 설정됨" if not need else " 빠짐"),
                 ", ".join(need)))
     # 4) 보안카드
-    try:
-        n = sum(1 for line in open(os.path.join(HERE, "보안카드.txt"), encoding="utf-8")
-                if line.strip() and not line.startswith("#") and ":" in line)
-        out.append((n == 30, f"보안카드 번호 {n}/30칸", "" if n == 30 else "보안카드.txt 를 확인해 주세요."))
-    except Exception:
-        out.append((False, "보안카드.txt 가 없어요", "프로그램 폴더에 보안카드.txt 를 넣어 주세요."))
+    n, why = 보안카드_상태()
+    out.append((n == 30, f"보안카드 {n}/30칸 (암호화 저장)" if n else "보안카드가 입력돼 있지 않아요",
+                "" if n == 30 else (why or "[⚙ 설정] → [보안카드 입력]에서 30칸을 넣어 주세요.")))
     # 5) 장부
     by, bm = B.발급할_달()
     rows = B.읽기(by, bm)
@@ -204,9 +214,8 @@ class App(tk.Tk):
         items = [("아이디", "홈택스 아이디", False), ("비밀번호", "홈택스 비밀번호", True),
                  ("주민번호_앞6", "주민번호 앞 6자리 (2차 인증)", False),
                  ("주민번호_뒤1", "주민번호 뒤 첫 자리 (2차 인증)", True),
-                 ("이름", "카톡 인증 받을 사람 이름", False), ("생년월일", "8자리 (예: 19600101)", False),
-                 ("휴대폰_뒷자리", "010 뒤 8자리", False), ("상호", "우리 가게 이름 (화면 제목)", False),
-                 ("업데이트_토큰", "업데이트용 열쇠 (깃허브 토큰)", True)]
+                 ("이름", "카톡 인증 받을 사람 이름", False), ("생년월일", "생년월일 8자리 (예: 19600101)", False),
+                 ("휴대폰_뒷자리", "휴대폰 010 뒤 8자리", False), ("상호", "우리 가게 이름 (화면 제목)", False)]
         ents = {}
         for i, (k, label, secret) in enumerate(items):
             tk.Label(form, text=label + " :", font=MID, bg="white", anchor="e", width=24
@@ -215,8 +224,11 @@ class App(tk.Tk):
             e.insert(0, cfg.get(k, ""))
             e.grid(row=i, column=1, sticky="w", padx=10)
             ents[k] = e
-        tk.Label(f, text="※ 이 컴퓨터의 '설정.json' 파일에만 저장돼요. 크롬에 아이디·비번이 저장돼 있으면 비워둬도 돼요.",
+        tk.Label(f, text="※ 이 컴퓨터, 이 윈도우 계정에서만 풀리게 암호화해서 저장돼요. 크롬에 아이디·비번이 저장돼 있으면 비워둬도 돼요.",
                  font=SMALL, bg="white", fg="#777").pack(anchor="w", padx=60, pady=10)
+        n, _ = 보안카드_상태()
+        tk.Button(f, text=f"🔐 보안카드 입력  (지금 {n}/30칸)", font=(F, fs(20), "bold"),
+                  bg="#DDEBF7" if n == 30 else "#FFC7CE", command=self.card_screen).pack(pady=(0, 5))
 
         def save():
             cfg.update({k: e.get().strip() for k, e in ents.items()})
@@ -224,6 +236,59 @@ class App(tk.Tk):
             messagebox.showinfo("설정", "저장했어요.")
             self.home()
         tk.Button(f, text="💾 저장", font=(F, fs(24), "bold"), width=12, bg="#FFE699", command=save).pack(pady=20)
+
+    # ───────────── 보안카드 입력 ─────────────
+    def card_screen(self):
+        f = self.switch()
+        top = tk.Frame(f, bg="white")
+        top.pack(fill="x", padx=40, pady=(20, 10))
+        tk.Button(top, text="◀ 설정으로", font=MID, command=self.settings).pack(side="left")
+        tk.Label(top, text="보안카드 입력", font=(F, fs(32), "bold"), bg="white").pack(side="left", padx=40)
+        tk.Label(f, text="보안카드를 보면서 칸마다 숫자 4개를 넣어 주세요. (예: 12 34 → 1234)",
+                 font=MID, bg="white", fg="#555").pack(pady=(0, 15))
+        try:
+            card = 보안저장.보안카드_읽기(HERE)
+        except Exception:
+            card = {}
+        grid = tk.Frame(f, bg="white")
+        grid.pack()
+        ents = {}
+        for i in range(30):
+            num = i + 1
+            row, col = i % 6, i // 6  # 보안카드: 1~6 이 첫 세로줄, 7~12 가 둘째 ...
+            tk.Label(grid, text=f"{num}", font=MID, bg="#EEE", width=3, relief="solid", bd=1
+                     ).grid(row=row, column=col * 2, padx=(18, 0), pady=6, ipady=4)
+            e = tk.Entry(grid, font=BIG, width=6, justify="center", relief="solid", bd=1)
+            if num in card:
+                e.insert(0, "".join(card[num]))
+            e.grid(row=row, column=col * 2 + 1, padx=(0, 6), pady=6)
+            ents[num] = e
+        order = [n for n in range(1, 31)]
+        for idx, num in enumerate(order):  # 4자리 치면 다음 칸으로
+            def nxt(ev, idx=idx):
+                v = "".join(ch for ch in ents[order[idx]].get() if ch.isdigit())
+                if len(v) == 4 and idx + 1 < len(order) and ev.keysym not in ("Tab", "BackSpace"):
+                    ents[order[idx + 1]].focus_set()
+            ents[num].bind("<KeyRelease>", nxt)
+
+        def save():
+            new, bad = {}, []
+            for num, e in ents.items():
+                v = "".join(ch for ch in e.get() if ch.isdigit())
+                if len(v) == 4:
+                    new[num] = (v[:2], v[2:])
+                    e.config(bg="white")
+                else:
+                    bad.append(num)
+                    e.config(bg="#FFC7CE")
+            if bad:
+                return messagebox.showwarning("보안카드", f"빨간 칸({', '.join(map(str, bad[:10]))}"
+                                              + (" 등" if len(bad) > 10 else "") + ")은 숫자 4개를 넣어 주세요.")
+            보안저장.보안카드_쓰기(HERE, new)
+            messagebox.showinfo("보안카드", "저장했어요. (이 컴퓨터에서만 풀리게 암호화됐어요)")
+            self.settings()
+        tk.Button(f, text="💾 저장", font=(F, fs(24), "bold"), width=12, bg="#FFE699", command=save).pack(pady=25)
+        ents[1].focus_set()
 
     # ───────────── 점검하기 ─────────────
     def check(self):
@@ -604,9 +669,7 @@ class App(tk.Tk):
         import threading
         import 업데이트 as U
         U.옛날파일_정리(HERE)
-        token = 설정_읽기().get("업데이트_토큰", "").strip()
-        if not token:
-            return
+        token = ""  # 저장소가 공개라 토큰 없이 받음
 
         def work():
             try:

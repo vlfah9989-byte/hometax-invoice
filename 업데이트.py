@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""깃허브(비공개) 릴리스에서 새 버전을 받아 exe 를 바꿈.
+"""깃허브(공개) 릴리스에서 새 버전을 받아 exe 를 바꿈.
 설정.json·장부·보안카드·발급기록은 절대 건드리지 않음 (exe 두 개만 바꿈)."""
 import json
 import os
@@ -20,16 +20,15 @@ def _ver(s):
 
 
 def _get(url, token, accept="application/vnd.github+json", timeout=15):
-    req = urllib.request.Request(url, headers={
-        "Authorization": f"Bearer {token}", "Accept": accept,
-        "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "hometax-invoice-updater"})
+    h = {"Accept": accept, "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "hometax-invoice-updater"}
+    if token:  # 저장소가 공개라 보통은 토큰 없이 받음
+        h["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, headers=h)
     return urllib.request.urlopen(req, timeout=timeout)
 
 
-def 새버전_확인(token):
+def 새버전_확인(token=""):
     """(새 버전 태그, {파일이름: 다운로드 url}) 또는 (None, None)"""
-    if not token:
-        return None, None
     with _get(f"https://api.github.com/repos/{저장소}/releases/latest", token) as r:
         rel = json.load(r)
     tag = rel.get("tag_name", "")

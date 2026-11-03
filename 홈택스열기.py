@@ -42,22 +42,20 @@ HERE = os.path.dirname(_BASE) if os.path.basename(_BASE) == "소스코드" else 
     "생년월일": "",
     "휴대폰_뒷자리": "",
     "상호": "",
-    "업데이트_토큰": "",
 }
 
 
+import 보안저장
+
+
 def 설정_읽기():
-    s = dict(기본설정)
-    if os.path.exists(설정파일):
-        try:
-            s.update(json.load(open(설정파일, encoding="utf-8")))
-        except Exception:
-            pass
+    s, 못푼것 = 보안저장.설정_읽기(설정파일, 기본설정)
+    s["_못푼것"] = 못푼것
     return s
 
 
 def 설정_쓰기(s):
-    json.dump(s, open(설정파일, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    보안저장.설정_쓰기(설정파일, {k: v for k, v in s.items() if not k.startswith("_")})
 
 
 설정 = 설정_읽기()
@@ -84,6 +82,9 @@ HOMETAX_URL = "https://www.hometax.go.kr"
 
 SPI_GETSCREENREADER = 0x0046
 SPI_SETSCREENREADER = 0x0047
+
+
+이번에_발급 = []  # 이번 실행에서 발급 완료한 것 (멈췄을 때 안내용)
 
 
 class 멈춤(Exception):
@@ -232,7 +233,7 @@ def _visible_area(ctrl):
     sw, sh = pyautogui.size()
     cands = []
     try:
-        top = ctrl.GetTopLevelControl()
+        top = _top_ctrl(ctrl)
         doc = top.DocumentControl(searchDepth=15)
         if doc.Exists(0, 0):
             cands.append(doc.BoundingRectangle)
@@ -262,8 +263,77 @@ def scroll_into_view(ctrl):
         time.sleep(0.4)
 
 
+class _POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+def _root_at(x, y):
+    u = ctypes.windll.user32
+    u.WindowFromPoint.restype = ctypes.c_void_p
+    u.GetAncestor.restype = ctypes.c_void_p
+    h = u.WindowFromPoint(_POINT(int(x), int(y)))
+    return u.GetAncestor(ctypes.c_void_p(h), 2) if h else None  # GA_ROOT
+
+
+def _top_ctrl(ctrl):
+    """ctrl 이 들어 있는 진짜 창 (부모를 따라 올라가서 바탕화면 바로 아래 것).
+    GetTopLevelControl() 은 크롬의 숨은 창을 잡는 경우가 있어서 직접 올라감."""
+    root = auto.GetRootControl().NativeWindowHandle
+    c = ctrl
+    for _ in range(80):
+        p = c.GetParentControl()
+        if p is None or p.NativeWindowHandle == root:
+            return c
+        c = p
+    return c
+
+
+def _top_handle(ctrl):
+    try:
+        return _top_ctrl(ctrl).NativeWindowHandle
+    except Exception:
+        return None
+
+
+def 맨앞으로(ctrl):
+    """ctrl 이 들어있는 창을 맨 앞으로 (다른 창이 가리고 있으면)"""
+    try:
+        top = _top_ctrl(ctrl)
+        top.SetActive()
+        time.sleep(0.3)
+        if _root_at(*_center(ctrl)) != top.NativeWindowHandle:
+            top.SetTopmost(True)   # 잠깐 맨 위로 올렸다가
+            time.sleep(0.2)
+            top.SetTopmost(False)  # 다시 원래대로 (팝업 창이 뒤로 숨지 않게)
+            top.SetActive()
+            time.sleep(0.3)
+    except Exception:
+        pass
+
+
+def _center(ctrl):
+    r = ctrl.BoundingRectangle
+    return r.xcenter(), r.ycenter()
+
+
+def 가림_확인(ctrl, x=None, y=None):
+    """(x,y) 자리에 실제로 ctrl 의 창이 보이는지. 가려져 있으면 맨 앞으로 가져오고, 그래도 안 되면 멈춤"""
+    if x is None:
+        x, y = _center(ctrl)
+    want = _top_handle(ctrl)
+    if not want:
+        return
+    for _ in range(3):
+        if _root_at(x, y) == want:
+            return
+        log("다른 창이 가리고 있어서 홈택스를 맨 앞으로 가져옴")
+        맨앞으로(ctrl)
+    raise 멈춤("다른 창이 홈택스 화면을 가리고 있어서 멈췄어요.\n(엉뚱한 곳을 누르지 않으려고 멈춘 거예요)")
+
+
 def click(ctrl):
     scroll_into_view(ctrl)
+    가림_확인(ctrl)
     r = ctrl.BoundingRectangle
     pyautogui.moveTo(r.xcenter(), r.ycenter(), duration=0.25)
     pyautogui.click()
@@ -300,6 +370,7 @@ def click_hand(ctrl):
         (cx + w // 3, r.bottom - 10),
         (cx, cy),
     ]
+    가림_확인(ctrl)
     for x, y in spots:
         pyautogui.moveTo(x, y, duration=0.15)
         time.sleep(0.25)
@@ -347,6 +418,14 @@ def type_into(ctrl, text):
     for how in ("타자", "붙여넣기", "직접"):
         click(ctrl)
         time.sleep(0.2)
+        want = _top_handle(ctrl)
+        fg = ctypes.windll.user32.GetForegroundWindow()
+        if want and fg != want:
+            맨앞으로(ctrl)
+            click(ctrl)
+            time.sleep(0.2)
+            if ctypes.windll.user32.GetForegroundWindow() != want:
+                raise 멈춤("홈택스 창이 앞에 없어서 글자를 안 넣고 멈췄어요.\n(다른 창에 잘못 입력하지 않으려고 멈춘 거예요)")
         pyautogui.hotkey("ctrl", "a")
         pyautogui.press("backspace")   # 크롬 자동완성으로 들어간 값 지우기
         time.sleep(0.1)
@@ -676,7 +755,7 @@ def simple_auth():
         btn = find("간편 인증", ["ButtonControl", "HyperlinkControl"], timeout=0, win_key="인증")
         if btn:
             break
-        if any("세금계산서(영세율포함)" in w.Name for w in chrome_windows()) or find_dialog_ok():
+        if on_issue_screen() or find_dialog_ok():
             log("이미 인증된 상태라서 인증 없이 발급 화면으로 넘어감")
             wait_auth_done(need_auth=False)
             return
@@ -767,11 +846,17 @@ def find_dialog_ok():
 
 @com_safe()
 def on_issue_screen():
-    """발급 화면 + 알림 없음 + 공급자 등록번호 채워짐"""
+    """발급 화면(창 제목과 상관없이 '발급하기' 버튼 + '등록번호' 칸이 보임) + 알림 없음"""
     for w in chrome_windows():
-        if "세금계산서(영세율포함)" in w.Name:
+        if "홈택스" not in w.Name:
+            continue
+        if nth_ctrl(w, "발급하기", ["ButtonControl"]) and nth_ctrl(w, "등록번호", ["EditControl"]):
             return find_dialog_ok() is None
     return False
+
+
+def 인증창_열림():
+    return any("인증" in w.Name and "홈택스" not in w.Name for w in chrome_windows())
 
 
 def wait_auth_done(timeout=600, need_auth=True):
@@ -789,7 +874,7 @@ def wait_auth_done(timeout=600, need_auth=True):
             click(ok)
             time.sleep(3)
             continue
-        if (clicked or not need_auth) and on_issue_screen():
+        if (clicked or not need_auth or not 인증창_열림()) and on_issue_screen():
             time.sleep(2)
             if find_dialog_ok() is None:
                 log("전자세금계산서 발급 화면 도착!")
@@ -1172,13 +1257,13 @@ def 한건_발급(it, date):
 
 
 def 보안카드_표():
-    card = {}
-    for line in open(os.path.join(HERE, "보안카드.txt"), encoding="utf-8"):
-        m = re.match(r"\s*(\d+)\s*:\s*(\d\d)\s+(\d\d)", line)
-        if m:
-            card[int(m.group(1))] = (m.group(2), m.group(3))
+    try:
+        card = 보안저장.보안카드_읽기(HERE)
+    except 보안저장.풀기실패:
+        raise 멈춤("보안카드를 이 컴퓨터에서 읽을 수 없어요. (다른 컴퓨터에서 저장한 것)\n"
+                 "[⚙ 설정] → [보안카드 입력]에서 다시 넣어 주세요.")
     if len(card) != 30:
-        raise 멈춤("보안카드.txt 를 못 읽었어요.")
+        raise 멈춤("보안카드가 입력돼 있지 않아요.\n[⚙ 설정] → [보안카드 입력]에서 30칸을 넣어 주세요.")
     return card
 
 
@@ -1254,6 +1339,7 @@ def 전체_발급():
                 log("⚠ 장부 엑셀이 열려 있어서 '등록번호 확인 필요' 표시를 못 했어요.")
             continue
         결과.append((it, 승인번호))
+        이번에_발급.append(f"{it['거래처명']} {it['금액']:,}원 {it['비고']}".strip())
         try:
             B.발급완료_표시(date.year, date.month, key, 승인번호)
         except PermissionError:
@@ -1557,6 +1643,42 @@ def main():
     log("완료!")
 
 
+def 멈춤_안내(이유, 사용자=False):
+    """아버지가 알아볼 수 있는 큰 글씨 안내창"""
+    try:
+        import tkinter as tk
+        root = tk.Tk()
+        root.title("세금계산서 - 멈췄어요")
+        root.configure(bg="white")
+        root.attributes("-topmost", True)
+        F = "맑은 고딕"
+        tk.Label(root, text="⚠ 자동 발급이 멈췄어요", font=(F, 30, "bold"), fg="#C00000", bg="white"
+                 ).pack(padx=50, pady=(30, 10))
+        if 사용자:
+            안내 = "직접 멈추셨어요. 다시 하시려면 [② 발급하기]를 누르세요."
+        else:
+            안내 = "홈택스 화면이 바뀌었거나 예상과 달라서 멈췄어요.\n이 화면을 사진 찍어서 아들한테 보내 주세요."
+        tk.Label(root, text=안내, font=(F, 20), bg="white").pack(padx=40, pady=10)
+        if 이번에_발급:
+            tk.Label(root, text=f"멈추기 전에 발급된 것 {len(이번에_발급)}건 (장부에 '발급완료'로 표시돼 있어요)",
+                     font=(F, 17, "bold"), fg="#006100", bg="white").pack(pady=(10, 0))
+            for x in 이번에_발급[:10]:
+                tk.Label(root, text="· " + x, font=(F, 15), bg="white").pack()
+        else:
+            tk.Label(root, text="발급된 것은 없어요.", font=(F, 17, "bold"), fg="#006100", bg="white").pack(pady=10)
+        tk.Label(root, text="나머지는 발급 안 됐어요. 같은 계산서가 두 번 발급되지는 않아요.", font=(F, 15),
+                 fg="#555", bg="white").pack(pady=(10, 0))
+        tk.Label(root, text="(자세한 이유: " + 이유.replace("\n", " ")[:150] + ")", font=(F, 12), fg="#888",
+                 bg="white", wraplength=760, justify="left").pack(padx=40, pady=15)
+        tk.Button(root, text="확인", font=(F, 20, "bold"), width=10, command=root.destroy).pack(pady=(5, 25))
+        root.update_idletasks()
+        w, h = root.winfo_width(), root.winfo_height()
+        root.geometry(f"+{(root.winfo_screenwidth() - w) // 2}+{max((root.winfo_screenheight() - h) // 2, 0)}")
+        root.mainloop()
+    except Exception:
+        pass
+
+
 def 점검():
     """아버지 화면의 [점검하기]에서 부름: 화면 크기·배율, 자동 입력 시험"""
     def out(ok, title, detail=""):
@@ -1627,14 +1749,17 @@ if __name__ == "__main__":
     except 멈춤 as e:
         log("멈춤: " + str(e))
         code = 1
+        멈춤_안내(str(e))
     except pyautogui.FailSafeException:
         log("사용자가 멈췄어요.")
         code = 1
+        멈춤_안내("마우스를 화면 구석으로 밀어서 멈췄어요.", 사용자=True)
     except Exception as e:  # 예상 못 한 오류도 창이 바로 닫히지 않게
         import traceback
         traceback.print_exc()
         log("멈춤: 예상 못 한 오류 - " + str(e))
         code = 1
+        멈춤_안내("예상 못 한 오류: " + str(e)[:120])
     finally:
         절전_막기(False)
         if not was_on:
