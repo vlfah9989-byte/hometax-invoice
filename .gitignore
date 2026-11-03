@@ -1,0 +1,27 @@
+# 허용한 파일만 올라감 (그 외 전부 차단)
+*
+!.gitignore
+!README.md
+!requirements.txt
+!set_version.py
+!거래처입력.py
+!거래처장부.py
+!홈택스열기.py
+!업데이트.py
+!버전.py
+!.github/
+!.github/workflows/
+!.github/workflows/build.yml
+
+# 혹시라도 들어오면 안 되는 것 (이중 안전장치)
+설정.json
+보안카드*
+발급기록*
+*.xlsx
+*.jpg
+*.png
+*.hwp
+*.exe
+*.zip
+*token*
+*.env

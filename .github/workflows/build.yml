@@ -1,0 +1,46 @@
+name: build-exe
+
+# v1.0.1 같은 태그를 올리면 exe 두 개를 만들어서 릴리스에 올림
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: install
+        run: pip install -r requirements.txt
+
+      - name: set version
+        run: python set_version.py "${{ github.ref_name }}"
+
+      - name: build
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --onefile --console --name 홈택스발급 `
+            --collect-all uiautomation --collect-submodules winrt --hidden-import winocr --hidden-import olefile `
+            --distpath dist --workpath work --specpath work --paths . 홈택스열기.py
+          python -m PyInstaller --noconfirm --onefile --windowed --name 세금계산서 `
+            --hidden-import openpyxl --distpath dist --workpath work --specpath work --paths . 거래처입력.py
+          Get-ChildItem dist
+
+      - name: release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" dist/세금계산서.exe dist/홈택스발급.exe `
+            --title "${{ github.ref_name }}" --notes "자동 빌드"
