@@ -253,13 +253,18 @@ def scroll_into_view(ctrl):
         time.sleep(0.3)
     except Exception:
         pass
+    last = None
     for _ in range(25):
         area = _visible_area(ctrl)
         r = ctrl.BoundingRectangle
-        if r.top >= area.top + 5 and r.bottom <= area.bottom - 5:
+        # 웹페이지 안에 조금이라도 들어와 있고 가운데가 보이면 그대로 누름 (맨 위 작은 '로그인'처럼 끝에 붙은 것도)
+        if area.top <= r.ycenter() <= area.bottom and r.bottom > area.top and r.top < area.bottom:
             return
+        if last == (r.top, r.bottom):  # 굴려도 안 움직임 → 더 굴려봐야 소용없음
+            return
+        last = (r.top, r.bottom)
         pyautogui.moveTo(area.xcenter(), area.ycenter(), duration=0.1)
-        pyautogui.scroll(-300 if r.bottom > area.bottom - 5 else 300)  # 아래면 내리고, 위면 올림
+        pyautogui.scroll(-300 if r.ycenter() > area.bottom else 300)  # 아래면 내리고, 위면 올림
         time.sleep(0.4)
 
 
