@@ -134,6 +134,7 @@ FIELDS = [  # (이름, 설명, 꼭 써야 함)
     ("성명", "대표자 이름", False),
     ("금액", "받은 금액 (부가세 포함)", True),
     ("비고", "2공구 같은 것 (없으면 비워두세요)", False),
+    ("작성일자", "비우면 말일 · 다른 날만 11/1 처럼", False),
     ("주소", "사업장 주소 (모르면 비워두세요)", False),
     ("이메일", "계산서 받을 메일 (모르면 비워두세요)", False),
 ]
@@ -352,8 +353,8 @@ class App(tk.Tk):
         form.pack(fill="x", padx=60, pady=10)
         self.ent = {}
         for i, (name, hint, must) in enumerate(FIELDS):
-            tk.Label(form, text=("★ " if must else "   ") + name + " :", font=BIG, bg="white",
-                     anchor="e", width=10).grid(row=i, column=0, sticky="e", pady=6)
+            tk.Label(form, text=("★ " if must else "   ") + ("날짜" if name == "작성일자" else name) + " :",
+                     font=BIG, bg="white", anchor="e", width=10).grid(row=i, column=0, sticky="e", pady=6)
             e = tk.Entry(form, font=BIG, width=39, relief="solid", bd=1)
             if name == "상호":
                 e.bind("<KeyRelease>", self.on_name_type)
@@ -361,7 +362,10 @@ class App(tk.Tk):
                 e.bind("<FocusOut>", lambda ev: self.after(200, self.sugg_hide_if_unfocused))
             e.grid(row=i, column=1, sticky="w", padx=10, pady=6)
             e.bind("<Return>", lambda ev, i=i: self.next_field(i))
-            tk.Label(form, text=hint, font=SMALL, bg="white", fg="#777").grid(row=i, column=2, sticky="w")
+            hl = tk.Label(form, text=hint, font=SMALL, bg="white", fg="#777")
+            hl.grid(row=i, column=2, sticky="w")
+            if name == "작성일자":
+                self.date_hint = hl
             self.ent[name] = e
         # 상호 추천 목록 (상호 칸 바로 아래에 뜨고, 커서를 뺏지 않음)
         self.sugg = tk.Listbox(f, font=MID, height=5, bg="#FFFBE6", relief="solid", bd=1,
@@ -372,6 +376,7 @@ class App(tk.Tk):
         self.ent["등록번호"].bind("<FocusOut>", self.on_bizno_out)
         self.ent["등록번호"].bind("<KeyRelease>", self.on_bizno_type)
         self.ent["금액"].bind("<FocusOut>", self.on_amount_out)
+        self.ent["작성일자"].bind("<FocusOut>", self.on_date_out)
 
         btns = tk.Frame(f, bg="white")
         btns.pack(pady=10)
@@ -383,9 +388,9 @@ class App(tk.Tk):
 
         self.count = tk.Label(f, font=MID, bg="white")
         self.count.pack(anchor="w", padx=60)
-        cols = ("상호", "등록번호", "성명", "금액", "비고", "상태")
+        cols = ("상호", "등록번호", "성명", "금액", "비고", "날짜", "상태")
         self.tree = ttk.Treeview(f, columns=cols, show="headings", height=8)
-        for c, w in zip(cols, (330, 190, 190, 160, 110, 150)):
+        for c, w in zip(cols, (310, 180, 170, 150, 100, 110, 150)):
             self.tree.heading(c, text=c)
             self.tree.column(c, width=w, anchor="center" if c != "상호" else "w")
         self.tree.pack(fill="both", expand=True, padx=60, pady=(5, 20))
@@ -521,6 +526,17 @@ class App(tk.Tk):
         if d:
             self.set("금액", f"{int(d):,}")
 
+    def on_date_out(self, ev=None):
+        """알아들은 날짜를 11/1 모양으로 바꿔 보여줌 (말일이면 비움)"""
+        v = self.ent["작성일자"].get().strip()
+        if not v:
+            return
+        try:
+            d = B.날짜_읽기(v, self.y, self.m)
+        except ValueError:
+            return  # 저장할 때 알려줌
+        self.set("작성일자", "" if d == B.말일(self.y, self.m) else f"{d.month}/{d.day}")
+
     def set(self, k, v):
         e = self.ent[k]
         e.delete(0, "end")
@@ -541,11 +557,21 @@ class App(tk.Tk):
         self.tree.delete(*self.tree.get_children())
         self.tree.tag_configure("bad", foreground="white", background="#C00000")
         self.tree.tag_configure("done", foreground="#006100")
+        self.tree.tag_configure("otherday", background="#FFF2CC")
+        끝 = B.말일(self.y, self.m)
+        self.date_hint.config(text=f"비우면 {끝.month}월 {끝.day}일 · 다른 날만 11/1 처럼")
         for i, r in enumerate(self.rows):
             st = r.get("상태") or "발급 전"
             tag = ("bad",) if st == B.확인필요 else ("done",) if st == "발급완료" else ()
+            try:
+                d = B.작성일(r, self.y, self.m)
+                날 = f"{d.month}/{d.day}"
+            except ValueError:
+                d, 날 = None, "⚠ " + str(r.get("작성일자"))
+            if d != 끝:
+                tag = tag + ("otherday",)
             self.tree.insert("", "end", iid=str(i), tags=tag, values=(
-                r["상호"], r["등록번호"], r.get("성명", ""), f"{int(r['금액']):,}", r.get("비고", ""),
+                r["상호"], r["등록번호"], r.get("성명", ""), f"{int(r['금액']):,}", r.get("비고", ""), 날,
                 "⚠ 등록번호 확인" if st == B.확인필요 else st))
         bad = [str(i) for i, r in enumerate(self.rows) if r.get("상태") == B.확인필요]
         if bad:
@@ -562,6 +588,7 @@ class App(tk.Tk):
         r = self.rows[i]
         for k, _, _ in FIELDS:
             self.set(k, f"{int(r['금액']):,}" if k == "금액" else r.get(k, ""))
+        self.on_date_out()  # 2026-11-01 → 11/1 로 보이게
         self.editing = i
         self.editing_key = self.row_key(r)
         self.save_btn.config(text="💾 고친 것 저장")
@@ -607,6 +634,10 @@ class App(tk.Tk):
             return self.warn("금액을 적어 주세요.", "금액")
         if v["이메일"] and "@" not in v["이메일"]:
             return self.warn("이메일에 @ 가 없어요.", "이메일")
+        try:
+            v["작성일자"] = B.날짜_저장값(v["작성일자"], self.y, self.m)
+        except ValueError as e:
+            return self.warn(str(e), "작성일자")
 
         row = {**v, "금액": amount, "등록번호": B.등록번호_모양(v["등록번호"])}
         if not self.reload_rows():
@@ -714,7 +745,13 @@ class App(tk.Tk):
         남은 = [r for r in B.읽기(by, bm) if r.get("상태") not in ("발급완료", B.확인필요)]
         if not 남은:
             return messagebox.showinfo("발급", f"{bm}월 식대는 발급할 게 없어요.\n(다 발급했거나 입력한 게 없어요)")
-        lst = "\n".join(f"  · {r['상호']}  {int(r['금액']):,}원 {r.get('비고', '')}" for r in 남은[:12])
+        def 날(r):
+            try:
+                d = B.작성일(r, by, bm)
+            except ValueError:
+                return "  (⚠ 날짜 확인)"
+            return f"  ({d.month}/{d.day})"
+        lst = "\n".join(f"  · {r['상호']}  {int(r['금액']):,}원 {r.get('비고', '')}{날(r)}" for r in 남은[:12])
         if not messagebox.askyesno("세금계산서 발급", f"{bm}월 식대 {len(남은)}건을 발급합니다.\n\n{lst}\n\n"
                                    "곧 휴대폰 카카오톡으로 인증 요청이 갑니다.\n시작할까요?"):
             return

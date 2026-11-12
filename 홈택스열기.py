@@ -139,6 +139,75 @@ def 절전_막기(on):
         pass
 
 
+# ── Esc 누르면 즉시 멈춤 ──
+class Esc멈춤(BaseException):
+    """Esc 로 멈춤 (BaseException 이라 중간의 'except Exception' 에 안 잡히고 끝까지 올라감)"""
+
+
+Esc_눌림 = False
+Esc_감시끝 = False   # 메인 흐름이 끝났으면 True (그 뒤 Esc 는 무시)
+Esc_처리됨 = False   # 메인 흐름이 Esc멈춤을 받아서 정리했으면 True
+_원래_failSafeCheck = pyautogui.failSafeCheck
+
+
+def _failSafeCheck_esc():
+    if Esc_눌림:  # Esc 뒤에는 마우스·키보드 동작을 하나도 안 함
+        raise Esc멈춤()
+    _원래_failSafeCheck()
+
+
+pyautogui.failSafeCheck = _failSafeCheck_esc
+
+
+def _손떼기():
+    """눌려 있을지 모르는 키·마우스 버튼을 전부 뗌 (Esc 뒤라 pyautogui 대신 직접)"""
+    u = ctypes.windll.user32
+    for vk in (0x11, 0x10, 0x12, 0x5B, 0x5C):  # Ctrl, Shift, Alt, 윈도우키
+        if u.GetAsyncKeyState(vk) & 0x8000:
+            u.keybd_event(vk, 0, 0x2, 0)  # KEYEVENTF_KEYUP
+    for btn, up in ((0x01, 0x0004), (0x02, 0x0010)):  # 왼쪽·오른쪽 버튼
+        if u.GetAsyncKeyState(btn) & 0x8000:
+            u.mouse_event(up, 0, 0, 0, 0)
+
+
+def esc_감시_시작(정리):
+    """Esc 를 새로 누르면: 마우스·키보드 동작 차단 → 손 떼기 → 메인 흐름에 Esc멈춤 던짐.
+    3초 안에 안 끝나면(오래 걸리는 화면 읽기 중) 안내창 띄우고 프로그램을 바로 끔."""
+    import threading
+    main_id = threading.main_thread().ident
+    u = ctypes.windll.user32
+
+    def watch():
+        global Esc_눌림
+        prev = bool(u.GetAsyncKeyState(0x1B) & 0x8000)  # 시작할 때 이미 누르고 있던 건 무시
+        while True:
+            down = bool(u.GetAsyncKeyState(0x1B) & 0x8000)
+            if Esc_감시끝:
+                return
+            if down and not prev:
+                break
+            prev = down
+            time.sleep(0.03)
+        Esc_눌림 = True
+        _손떼기()
+        log("Esc 를 눌러서 멈춤")
+        ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(main_id), ctypes.py_object(Esc멈춤))
+        for _ in range(30):
+            time.sleep(0.1)
+            if Esc_처리됨:
+                return
+        # 아직 안 멈췄으면 (화면 읽기 중에 막혀 있는 경우) 여기서 정리하고 끔
+        try:
+            정리()
+        except Exception:
+            pass
+        u.MessageBoxW(None, "Esc 를 눌러서 자동 발급을 멈췄어요.\n다시 하시려면 [② 발급하기]를 누르세요.",
+                      "세금계산서 - 멈췄어요", 0x40 | 0x40000 | 0x10000)  # 정보, 맨 위, 앞으로
+        os._exit(1)
+
+    threading.Thread(target=watch, daemon=True).start()
+
+
 def 팝업_차단됐나():
     """크롬 주소창 오른쪽의 '팝업 차단됨' 표시가 있으면 True"""
     for w in chrome_windows():
@@ -1093,14 +1162,15 @@ def 작성일자_달력(target):
         click(nth_ctrl(w, btn, ["ButtonControl"]))
         time.sleep(0.8)
     else:
-        raise 멈춤("달력에서 저번 달로 못 넘어갔어요.")
+        raise 멈춤(f"달력에서 {target.month}월로 못 넘어갔어요.")
     grid = nth_ctrl(hometax_win(), "달력", ["DataGridControl"])
     cells = [c for c, _ in auto.WalkControl(grid, maxDepth=4)
              if c.ControlTypeName == "DataItemControl" and (c.Name or "").strip() == str(target.day)]
     if not cells:
         raise 멈춤(f"달력에서 {target.day}일을 못 찾았어요.")
     log(f"달력에서 {target.month}월 {target.day}일 클릭")
-    click(cells[-1])  # 앞쪽 지난달 날짜 말고 이번 달 말일
+    # 달력에는 앞뒤 달 날짜도 보임: 앞쪽 회색 칸은 큰 숫자(지난달 말), 뒤쪽은 작은 숫자(다음달 초)
+    click(cells[0] if target.day <= 15 else cells[-1])
     time.sleep(1.0)
     v = 값(nth_ctrl(hometax_win(), "작성일자", ["EditControl"]))
     if re.sub(r"\D", "", v) != target.strftime("%Y%m%d"):
@@ -1125,12 +1195,15 @@ def clear_bizno():
 
 
 def 한건_발급(it, date):
+    """date = 장부 달의 말일 (품목 'N월식대' 기준). 작성일자는 그 줄의 날짜(it['작성일'], 없으면 말일)"""
+    장부달 = date.month
+    date = it.get("작성일") or date
     bizno = re.sub(r"\D", "", it["사업자번호"])
     amount = it["금액"]
     supply = int(round(amount / 1.1))
     tax = amount - supply
     name = it.get("거래처명", "")
-    log(f"── [{it['번호']}] {name} {it['비고']} {amount:,}원 (공급가액 {supply:,} / 세액 {tax:,})")
+    log(f"── [{it['번호']}] {name} {it['비고']} {amount:,}원 (공급가액 {supply:,} / 세액 {tax:,}) 작성일자 {date}")
 
     # 1) 등록번호 → 확인 → '정상적인 사업자번호입니다'
     e = 칸_넣기("등록번호", bizno)
@@ -1174,10 +1247,10 @@ def 한건_발급(it, date):
         칸_넣기("이메일", id_, 2)
         칸_넣기("이메일 도메인 입력", dom, 2)
 
-    # 3) 작성일자(달력에서 저번 달 말일) / 일 / 품목 / 공급가액 / 비고
+    # 3) 작성일자(달력에서 그 줄 날짜, 기본 말일) / 일 / 품목(장부 달) / 공급가액 / 비고
     작성일자_달력(date)
     칸_넣기("1행 일", str(date.day))
-    칸_넣기("1행 품목", f"{date.month}월식대")
+    칸_넣기("1행 품목", f"{장부달}월식대")
     칸_넣기("1행 공급가액", str(supply))
     if it["비고"]:
         칸_넣기("1행 비고", it["비고"])
@@ -1200,7 +1273,7 @@ def 한건_발급(it, date):
     for k, (c, want) in check.items():
         if re.sub(r"\D", "", 값(c)) != want:
             raise 멈춤(f"'{k}' 값이 이상해요: {값(c)} (원래 {want})")
-    if 값(nth_ctrl(w, "1행 품목", ["EditControl"])) != f"{date.month}월식대":
+    if 값(nth_ctrl(w, "1행 품목", ["EditControl"])) != f"{장부달}월식대":
         raise 멈춤("품목 값이 이상해요.")
 
     # 5) 발급하기 → (이메일 없으면) 계속 발급? 확인 → 발급 확인창
@@ -1311,13 +1384,18 @@ def 장부_목록():
     for r in B.읽기(date.year, date.month):
         bizno = B.등록번호_모양(r.get("등록번호"))
         memo = str(r.get("비고") or "").strip()
-        key = (date.strftime("%Y-%m-%d"), bizno, memo, str(int(r["금액"])))
+        try:
+            작성 = B.작성일(r, date.year, date.month)  # 비어 있으면 말일, 아버지가 넣었으면 그 날
+        except ValueError as e:
+            log(f"[{r['번호']}] {r.get('상호')} - 날짜가 이상해서 패스: {e}")
+            continue
+        key = (작성.strftime("%Y-%m-%d"), bizno, memo, str(int(r["금액"])))
         if r.get("상태") == "발급완료" or key in done:
             continue
         if r.get("상태") == B.확인필요:
             log(f"[{r['번호']}] {r.get('상호')} - 등록번호 확인 필요 (고쳐서 저장하면 다시 발급) → 패스")
             continue
-        todo.append({"번호": r["번호"], "거래처명": str(r.get("상호") or "").strip(), "사업자번호": bizno,
+        todo.append({"번호": r["번호"], "작성일": 작성, "거래처명": str(r.get("상호") or "").strip(), "사업자번호": bizno,
                      "대표자": str(r.get("성명") or "").strip(), "비고": memo, "금액": int(r["금액"]),
                      "주소": str(r.get("주소") or "").strip(), "이메일": str(r.get("이메일") or "").strip()})
     return date, todo
@@ -1326,7 +1404,9 @@ def 장부_목록():
 def 전체_발급():
     import 거래처장부 as B
     date, todo = 장부_목록()
-    log(f"{date.month}월 식대 장부 / 작성일자 {date} / 발급할 것 {len(todo)}건")
+    다른날 = sum(1 for it in todo if it["작성일"] != date)
+    log(f"{date.month}월 식대 장부 / 작성일자 기본 {date}" + (f" (다른 날짜 {다른날}건)" if 다른날 else "")
+        + f" / 발급할 것 {len(todo)}건")
     결과, 건너뛴것 = [], []
     for it in todo:
         key = (it["사업자번호"], it["비고"], it["금액"])
@@ -1393,29 +1473,28 @@ def 다운로드_폴더들():
     return [d for d in dirs if os.path.isdir(d)]
 
 
-def 이미_조회됨(date, 첫줄):
-    """조회 기간이 이미 말일~말일이고, 저장할 줄이 목록에 떠 있으면 True"""
+def 이미_조회됨(시작, 끝, 첫줄):
+    """조회 기간이 이미 시작~끝이고, 저장할 줄이 목록에 떠 있으면 True"""
     w = hometax_win()
     s = nth_ctrl(w, "조회 시작일 입력", ["EditControl"])
     e = nth_ctrl(w, "조회 종료일 입력", ["EditControl"])
-    want = date.strftime("%Y%m%d")
-    if not s or not e or re.sub(r"\D", "", 값(s)) != want or re.sub(r"\D", "", 값(e)) != want:
+    if not s or not e or re.sub(r"\D", "", 값(s)) != 시작.strftime("%Y%m%d")             or re.sub(r"\D", "", 값(e)) != 끝.strftime("%Y%m%d"):
         return False
     return 목록_줄_찾기(첫줄) is not None
 
 
-def 발급목록_조회(date, 건수, 첫줄=None):
-    if 첫줄 is not None and 이미_조회됨(date, 첫줄):
-        log(f"이미 {date} 발급목록이 떠 있어서 조회 없이 바로 진행")
+def 발급목록_조회(시작, 끝, 건수, 첫줄=None):
+    if 첫줄 is not None and 이미_조회됨(시작, 끝, 첫줄):
+        log(f"이미 {시작} ~ {끝} 발급목록이 떠 있어서 조회 없이 바로 진행")
         return
     scroll_top()
     if not find("조회 시작일 입력", ["EditControl"], timeout=1, win_key="홈택스"):  # 이미 목록 화면이면 안 누름
         click_name("발급목록 조회", ["ButtonControl"], win_key="홈택스", after=2.5)
     if not find("조회 시작일 입력", ["EditControl"], timeout=15, win_key="홈택스"):
         raise 멈춤("발급목록 조회 화면이 안 떴어요.")
-    for nm in ("조회 시작일 입력", "조회 종료일 입력"):
+    for nm, d in (("조회 시작일 입력", 시작), ("조회 종료일 입력", 끝)):
         e = nth_ctrl(hometax_win(), nm, ["EditControl"])
-        type_into(e, date.strftime("%Y%m%d"))
+        type_into(e, d.strftime("%Y%m%d"))
         pyautogui.press("tab")
         time.sleep(0.4)
     if 건수 > 10:  # 한 화면에 다 나오게
@@ -1430,7 +1509,7 @@ def 발급목록_조회(date, 건수, 첫줄=None):
             cb.GetExpandCollapsePattern().Collapse()
         except Exception:
             pass
-    log(f"발급목록 조회: {date} ~ {date}")
+    log(f"발급목록 조회: {시작} ~ {끝}")
     click(nth_ctrl(hometax_win(), "조회", ["ButtonControl"]))
     time.sleep(3)
 
@@ -1572,7 +1651,13 @@ def 이미지_저장_전체(date):
         return 0
     folder = 이미지_폴더(date)
     log(f"── 발급한 계산서 이미지 저장 {len(todo)}건 → {folder}")
-    발급목록_조회(date, len(B.읽기(date.year, date.month)), todo[0])
+    날짜들 = []
+    for r in todo:
+        try:
+            날짜들.append(B.작성일(r, date.year, date.month))
+        except ValueError:
+            날짜들.append(date)
+    발급목록_조회(min(날짜들), max(날짜들), len(B.읽기(date.year, date.month)), todo[0])
     n = 0
     for r in todo:
         try:
@@ -1624,7 +1709,7 @@ def 완료_알림(date, 결과, 건너뛴것, 저장됨=0):
 
 
 def main():
-    log("홈택스 자동화 시작 (멈추려면 마우스를 화면 왼쪽 위 구석으로)")
+    log("홈택스 자동화 시작 (멈추려면 Esc 키를 누르세요)")
     if capslock_끄기():
         log("Caps Lock 이 켜져 있어서 껐어요")
     date, todo = 장부_목록()
@@ -1748,9 +1833,25 @@ if __name__ == "__main__":
     was_on = screen_reader_flag_get()
     screen_reader_flag(True)
     절전_막기(True)
+
+    def 정리():
+        절전_막기(False)
+        if not was_on:
+            screen_reader_flag(False)
+    esc_감시_시작(정리)
     code = 0
     try:
-        main()
+        try:
+            main()
+        finally:
+            Esc_감시끝 = True
+    except Esc멈춤:
+        Esc_처리됨 = True
+        Esc_감시끝 = True
+        log("Esc 를 눌러서 멈췄어요.")
+        code = 1
+        정리()
+        멈춤_안내("Esc 를 눌러서 멈췄어요.", 사용자=True)
     except 멈춤 as e:
         log("멈춤: " + str(e))
         code = 1

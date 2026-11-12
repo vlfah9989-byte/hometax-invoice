@@ -14,9 +14,9 @@ _BASE = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen",
 HERE = os.path.dirname(_BASE) if os.path.basename(_BASE) == "소스코드" else _BASE
 장부폴더 = os.path.join(HERE, "거래처기록")
 
-COLS = ["번호", "상호", "등록번호", "성명", "금액", "비고", "주소", "이메일",
+COLS = ["번호", "상호", "등록번호", "성명", "금액", "비고", "작성일자", "주소", "이메일",
         "입력한 날", "상태", "승인번호", "발급한 날"]
-WIDTH = [6, 26, 15, 16, 13, 10, 40, 26, 17, 10, 28, 17]
+WIDTH = [6, 26, 15, 16, 13, 10, 12, 40, 26, 17, 10, 28, 17]
 
 
 def 입력할_달(today=None):
@@ -33,6 +33,75 @@ def 발급할_달(today=None):
     today = today or datetime.date.today()
     prev = today.replace(day=1) - datetime.timedelta(days=1)
     return prev.year, prev.month
+
+
+def 말일(year, month):
+    import calendar
+    return datetime.date(year, month, calendar.monthrange(year, month)[1])
+
+
+def 날짜_읽기(s, year, month):
+    """장부의 '작성일자' 칸 → date. 비어 있으면 None(= 그달 말일).
+    '11/1', '11.1', '1101', '2026-11-01', '20261101', '1'(그달 1일) 다 알아들음.
+    이상하면 ValueError (아버지 화면에 보여줄 설명)"""
+    if isinstance(s, datetime.datetime):
+        s = s.date()
+    if isinstance(s, datetime.date):
+        d = s
+    else:
+        t = str(s or "").strip()
+        if not t:
+            return None
+        parts = [int(x) for x in re.findall(r"\d+", t)]
+        try:
+            if len(parts) == 3:
+                y, m, dd = parts
+                d = datetime.date(y + 2000 if y < 100 else y, m, dd)
+            elif len(parts) == 2:
+                d = _가까운_해(parts[0], parts[1], year, month)
+            elif len(parts) == 1:
+                x = str(parts[0]) if not t.isdigit() else t
+                if len(x) <= 2:
+                    d = datetime.date(year, month, int(x))
+                elif len(x) in (3, 4):
+                    d = _가까운_해(int(x[:-2]), int(x[-2:]), year, month)
+                elif len(x) == 8:
+                    d = datetime.date(int(x[:4]), int(x[4:6]), int(x[6:]))
+                else:
+                    raise ValueError
+            else:
+                raise ValueError
+        except ValueError:
+            raise ValueError(f"날짜를 못 알아봤어요: {t}" + "\n" + "(예: 11/1 처럼 월/일로 적어 주세요)")
+    기준 = 말일(year, month)
+    if not (-40 <= (d - 기준).days <= 62):
+        raise ValueError(f"날짜가 {month}월 장부와 너무 떨어져 있어요: {d.month}월 {d.day}일" + "\n" + "다시 확인해 주세요.")
+    return d
+
+
+def _가까운_해(m, dd, year, month):
+    """월/일만 있으면 장부 달에 제일 가까운 해로 (12월 장부에 1/5 → 다음 해)"""
+    기준 = 말일(year, month)
+    cands = []
+    for y in (year - 1, year, year + 1):
+        try:
+            cands.append(datetime.date(y, m, dd))
+        except ValueError:
+            pass
+    if not cands:
+        raise ValueError
+    return min(cands, key=lambda d: abs((d - 기준).days))
+
+
+def 작성일(row, year, month):
+    """그 줄의 작성일자 (비어 있으면 그달 말일)"""
+    return 날짜_읽기(row.get("작성일자"), year, month) or 말일(year, month)
+
+
+def 날짜_저장값(s, year, month):
+    """입력 화면에서 받은 날짜 → 장부에 적을 값. 말일과 같거나 비었으면 '' (기본)"""
+    d = 날짜_읽기(s, year, month)
+    return "" if d is None or d == 말일(year, month) else d.strftime("%Y-%m-%d")
 
 
 def 장부_경로(year, month):
