@@ -14,9 +14,9 @@ _BASE = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen",
 HERE = os.path.dirname(_BASE) if os.path.basename(_BASE) == "소스코드" else _BASE
 장부폴더 = os.path.join(HERE, "거래처기록")
 
-COLS = ["번호", "상호", "등록번호", "성명", "금액", "비고", "작성일자", "주소", "이메일",
+COLS = ["번호", "상호", "등록번호", "성명", "금액", "비고", "품목", "작성일자", "주소", "이메일",
         "입력한 날", "상태", "승인번호", "발급한 날"]
-WIDTH = [6, 26, 15, 16, 13, 10, 12, 40, 26, 17, 10, 28, 17]
+WIDTH = [6, 26, 15, 16, 13, 10, 20, 12, 40, 26, 17, 10, 28, 17]
 
 
 def 입력할_달(today=None):
@@ -29,10 +29,21 @@ def 입력할_달(today=None):
 
 
 def 발급할_달(today=None):
-    """발급은 항상 저번 달 (작성일자 = 저번 달 말일)"""
+    """처음 화면 달 선택의 처음 값 = ①에서 입력하는 달 (25일~말일 = 이번 달, 1~24일 = 저번 달)"""
+    return 입력할_달(today)
+
+
+def 달의_해(month, today=None):
+    """처음 화면에서 고른 달 → 해 (오늘보다 뒤 달이면 작년)"""
     today = today or datetime.date.today()
-    prev = today.replace(day=1) - datetime.timedelta(days=1)
-    return prev.year, prev.month
+    return today.year if month <= today.month else today.year - 1
+
+
+def 처음_날짜(today=None):
+    """처음 화면 '몇월 며칠' 처음 값: 그 달이 이번 달이면 오늘, 지난 달이면 말일"""
+    today = today or datetime.date.today()
+    y, m = 발급할_달(today)
+    return min(말일(y, m), today)
 
 
 def 말일(year, month):
@@ -93,15 +104,16 @@ def _가까운_해(m, dd, year, month):
     return min(cands, key=lambda d: abs((d - 기준).days))
 
 
-def 작성일(row, year, month):
-    """그 줄의 작성일자 (비어 있으면 그달 말일)"""
-    return 날짜_읽기(row.get("작성일자"), year, month) or 말일(year, month)
+def 작성일(row, year, month, 기본=None):
+    """그 줄의 작성일자. 비어 있으면 기본(처음 화면에서 고른 날짜), 그것도 없으면 그달 말일.
+    발급완료된 줄은 발급할 때 쓴 날짜가 장부에 적혀 있어서 그 날짜 그대로."""
+    return 날짜_읽기(row.get("작성일자"), year, month) or 기본 or 말일(year, month)
 
 
 def 날짜_저장값(s, year, month):
-    """입력 화면에서 받은 날짜 → 장부에 적을 값. 말일과 같거나 비었으면 '' (기본)"""
+    """입력 화면에서 받은 날짜 → 장부에 적을 값. 비었으면 '' (= 처음 화면에서 고른 날로 발급)"""
     d = 날짜_읽기(s, year, month)
-    return "" if d is None or d == 말일(year, month) else d.strftime("%Y-%m-%d")
+    return "" if d is None else d.strftime("%Y-%m-%d")
 
 
 def 장부_경로(year, month):
@@ -178,19 +190,22 @@ def 쓰기(year, month, rows):
 확인필요 = "등록번호 확인 필요"
 
 
-def 상태_표시(year, month, row_key, 상태, 메모=""):
-    """row_key = (등록번호, 비고, 금액). 발급완료면 메모=승인번호, 확인필요면 메모=홈택스 알림 내용"""
+def 상태_표시(year, month, row_key, 상태, 메모="", 작성일자=None):
+    """row_key = (등록번호, 비고, 금액). 발급완료면 메모=승인번호, 확인필요면 메모=홈택스 알림 내용.
+    작성일자를 주면 장부에 그 날짜를 적어 둠 (다음 날 열어도 발급한 날짜가 안 바뀌게)"""
     rows = 읽기(year, month)
     for r in rows:
         if (등록번호_모양(r["등록번호"]), str(r.get("비고") or "").strip(), int(r["금액"])) == row_key:
             r["상태"] = 상태
             r["승인번호"] = 메모
             r["발급한 날"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M") if 상태 == "발급완료" else ""
+            if 작성일자:
+                r["작성일자"] = 작성일자.strftime("%Y-%m-%d")
     쓰기(year, month, rows)
 
 
-def 발급완료_표시(year, month, row_key, 승인번호):
-    상태_표시(year, month, row_key, "발급완료", 승인번호)
+def 발급완료_표시(year, month, row_key, 승인번호, 작성일자=None):
+    상태_표시(year, month, row_key, "발급완료", 승인번호, 작성일자)
 
 
 def 예전_거래처():

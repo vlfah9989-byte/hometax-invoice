@@ -730,6 +730,7 @@ def login():
         raise 멈춤("홈택스 화면이 안 떴어요.")
     time.sleep(1.5)
     scroll_top()  # 아래로 내려가 있으면 '로그아웃'이 안 보임
+    방해창_닫기(확인도=True)
 
     if find("로그아웃", ["HyperlinkControl", "ButtonControl"], timeout=2):
         log("이미 로그인돼 있어서 로그인은 건너뜀")
@@ -808,6 +809,10 @@ def find_top_menu(name):
 
 def open_issue_menu():
     scroll_top()
+    if on_issue_screen():  # 이미 발급 화면이면 메뉴 안 누르고 바로
+        log("이미 전자세금계산서 발급 화면이라 메뉴는 건너뜀")
+        return
+    방해창_닫기(확인도=True)
     menu = wait_for(lambda: find_top_menu("계산서ㆍ영수증ㆍ카드"), timeout=10, interval=0.7)
     if not menu:
         raise 멈춤("맨 위 '계산서ㆍ영수증ㆍ카드' 메뉴를 못 찾았어요.")
@@ -839,11 +844,11 @@ def simple_auth():
     if not btn:
         raise 멈춤("인증선택 창이 안 떴어요." + ("\n" + 팝업_안내 if 팝업_차단됐나() else ""))
     time.sleep(2.5)  # 창이 다 준비될 때까지
-    kakao = None
-    for _ in range(3):  # 안 열리면 다시 누름
+    kakao = find_kakao(timeout=2)  # 이미 간편인증 목록이 열려 있으면 바로
+    for _ in range(3 if not kakao else 0):  # 안 열리면 다시 누름
         log("'간편 인증' 클릭 (손가락 모양 되는 곳)")
         click_hand(btn)
-        kakao = find("카카오톡", ["ButtonControl"], timeout=6, win_key="인증")
+        kakao = find_kakao(timeout=6)
         if kakao:
             break
     if not kakao:
@@ -851,21 +856,51 @@ def simple_auth():
     kakao_fill_and_request(kakao)
 
 
+def find_kakao(timeout=6):
+    """간편인증 목록의 카카오톡 (홈택스가 화면을 바꿔도 찾게 여러 이름으로. 카카오뱅크는 제외)"""
+    def _f():
+        for nm, types in (("KAKAO(카카오)", ["HyperlinkControl", "ButtonControl"]),
+                          ("카카오톡", ["ButtonControl", "HyperlinkControl"]),
+                          ("카카오톡", ["ListItemControl"])):
+            c = find(nm, types, timeout=0, win_key="인증")
+            if c:
+                return c
+        return None
+    return wait_for(_f, timeout, interval=0.7)
+
+
+def _인증칸(label):
+    """인증 입력칸 ('생년월일 여덟자리', '휴대폰번호 뒷자리 여덟자리' 처럼 이름이 바뀌어도 찾음)"""
+    if label == "이름":
+        return find("이름", ["EditControl"], timeout=10, win_key="인증")
+    if label == "생년월일":
+        return find("생년월일", ["EditControl"], exact=False, startswith=True, timeout=10, win_key="인증")
+    return (find("휴대폰번호뒷자리", ["EditControl"], exact=False, timeout=5, win_key="인증")
+            or find("휴대폰", ["EditControl"], exact=False, startswith=True, timeout=5, win_key="인증"))
+
+
 def kakao_fill_and_request(kakao):
     log("'카카오톡' 클릭")
     click_hand(kakao)
     time.sleep(1.5)
 
-    fields = (("이름", 이름), ("생년월일", 생년월일), ("휴대폰 번호", 휴대폰_뒷자리))
+    fields = (("이름", 이름), ("생년월일", 생년월일), ("휴대폰", 휴대폰_뒷자리))
+
+    def 값읽기(label):
+        e = _인증칸(label)
+        try:
+            return e.GetValuePattern().Value.strip() if e else None
+        except Exception:
+            return None
     for attempt in range(3):
         for label, value in fields:
-            e = find(label, ["EditControl"], timeout=10, win_key="인증")
+            e = _인증칸(label)
             if not e:
                 raise 멈춤(f"'{label}' 칸을 못 찾았어요.")
             log(f"'{label}' 입력")
             type_into(e, value)
             close_autofill(e)
-        wrong = [label for label, value in fields if read_value(label) != value]
+        wrong = [label for label, value in fields if 값읽기(label) != value]
         if not wrong:
             break
         log(f"입력이 잘못 들어감 {wrong} → 다시 입력")
@@ -919,6 +954,56 @@ def find_dialog_ok():
 
 
 @com_safe()
+def 방해창_닫기(확인도=False):
+    """가끔 뜨는 홈택스 안내 팝업 창 / 확인만 있는 알림을 닫음 (로그인~인증 단계에서만 씀).
+    다른 사이트 창, 인증창, 출력창은 안 건드림. 닫았으면 True"""
+    닫음 = False
+    for w in chrome_windows():
+        nm = w.Name or ""
+        if nm.startswith("국세청 홈택스") or "인증" in nm or nm.startswith("Report"):
+            continue
+        try:
+            주소 = w.EditControl(searchDepth=12, Name="주소창 및 검색창")
+            url = 주소.GetValuePattern().Value if 주소.Exists(0, 0) else ""
+        except Exception:
+            url = ""
+        if "hometax.go.kr" in url and "popup" in url:
+            log(f"홈택스 안내 팝업 창 닫음: {nm[:30]}")
+            try:
+                w.GetWindowPattern().Close()
+            except Exception:
+                pass
+            닫음 = True
+    # 확인 버튼 하나만 있는 알림 (입력칸 옆 '확인' 버튼은 제외). 발급 화면에서는 안 씀
+    for w in (chrome_windows() if 확인도 else []):
+        if "홈택스" not in w.Name and "인증" not in w.Name:
+            continue
+        edits, oks, cancels = [], [], []
+        for c, _ in auto.WalkControl(w, maxDepth=80):
+            t = c.ControlTypeName
+            r = c.BoundingRectangle
+            if r.width() <= 0:
+                continue
+            if t == "EditControl":
+                edits.append(r)
+            elif t == "ButtonControl" and (c.Name or "").strip() == "확인":
+                oks.append(c)
+            elif t == "ButtonControl" and (c.Name or "").strip() == "취소":
+                cancels.append(r)
+        for ok in oks:
+            r = ok.BoundingRectangle
+            if any(abs(e.ycenter() - r.ycenter()) < 15 for e in edits):
+                continue  # 입력칸 옆 확인 (등록번호 확인, 2차 인증 확인 등)
+            if any(abs(cr.ycenter() - r.ycenter()) < 10 for cr in cancels):
+                continue  # 확인/취소 둘 다 있는 건 따로 판단 (find_dialog_ok)
+            log("안내창 '확인' 클릭")
+            click(ok)
+            time.sleep(1.5)
+            return True
+    return 닫음
+
+
+@com_safe()
 def on_issue_screen():
     """발급 화면(창 제목과 상관없이 '발급하기' 버튼 + '등록번호' 칸이 보임) + 알림 없음"""
     for w in chrome_windows():
@@ -953,9 +1038,8 @@ def wait_auth_done(timeout=600, need_auth=True):
             if find_dialog_ok() is None:
                 log("전자세금계산서 발급 화면 도착!")
                 return
-        if not clicked and find("공동∙금융 인증", ["ButtonControl"], exact=False, timeout=0, win_key="인증") \
-                and not find("인증 완료", ["ButtonControl"], timeout=0, win_key="인증"):
-            raise 멈춤("인증이 안 됐어요. (폰 인증 전에 인증 완료를 누르면 처음으로 돌아가요) 다시 실행해 주세요.")
+        # (홈택스 새 화면은 인증 카드가 뒤에 계속 보여서 '인증 안 됨' 판단은 안 함. 안 되면 Esc 로 멈춤)
+        방해창_닫기()
         time.sleep(1.5)
     raise 멈춤("10분 동안 인증이 안 끝났어요.")
 
@@ -973,6 +1057,18 @@ def 지난달_말일(today=None):
     today = today or datetime.date.today()
     first = today.replace(day=1)
     return first - datetime.timedelta(days=1)
+
+
+def 발급_날짜():
+    """처음 화면에서 고른 '몇월 며칠' (--날짜 2026-11-27). 없으면 예전처럼 지난달 말일.
+    그 날짜의 달 장부를 발급하고, 작성일자 칸이 빈 줄은 이 날짜로 발급함"""
+    if "--날짜" in sys.argv:
+        i = sys.argv.index("--날짜")
+        try:
+            return datetime.datetime.strptime(sys.argv[i + 1], "%Y-%m-%d").date()
+        except (IndexError, ValueError):
+            raise 멈춤("발급 날짜를 못 알아봤어요. 처음 화면에서 날짜를 다시 골라 주세요.")
+    return 지난달_말일()
 
 
 # ── 한글(.hwp) 거래처 정리 파일 읽기 ──
@@ -1250,7 +1346,8 @@ def 한건_발급(it, date):
     # 3) 작성일자(달력에서 그 줄 날짜, 기본 말일) / 일 / 품목(장부 달) / 공급가액 / 비고
     작성일자_달력(date)
     칸_넣기("1행 일", str(date.day))
-    칸_넣기("1행 품목", f"{장부달}월식대")
+    품목 = it.get("품목") or f"{장부달}월식대"  # 장부에 품목을 적었으면 그대로, 비었으면 'N월식대'
+    칸_넣기("1행 품목", 품목)
     칸_넣기("1행 공급가액", str(supply))
     if it["비고"]:
         칸_넣기("1행 비고", it["비고"])
@@ -1271,10 +1368,10 @@ def 한건_발급(it, date):
         "1행 세액": (nth_ctrl(w, "1행 세액", ["EditControl"]), str(tax)),
     }
     for k, (c, want) in check.items():
-        if re.sub(r"\D", "", 값(c)) != want:
+        if re.sub(r"\D", "", 값(c)).lstrip("0") != want.lstrip("0"):  # 홈택스가 1 → 01 로 보여줌
             raise 멈춤(f"'{k}' 값이 이상해요: {값(c)} (원래 {want})")
-    if 값(nth_ctrl(w, "1행 품목", ["EditControl"])) != f"{장부달}월식대":
-        raise 멈춤("품목 값이 이상해요.")
+    if 값(nth_ctrl(w, "1행 품목", ["EditControl"])).strip() != 품목:
+        raise 멈춤(f"품목 값이 이상해요: {값(nth_ctrl(w, '1행 품목', ['EditControl']))} (원래 {품목})")
 
     # 5) 발급하기 → (이메일 없으면) 계속 발급? 확인 → 발급 확인창
     click(nth_ctrl(w, "발급하기", ["ButtonControl"]))
@@ -1378,14 +1475,14 @@ def 보안카드_입력():
 def 장부_목록():
     """거래처기록\\YYYY년 MM월.xlsx 에서 아직 발급 안 한 것"""
     import 거래처장부 as B
-    date = 지난달_말일()
+    date = 발급_날짜()
     done = 기록_읽기()
     todo = []
     for r in B.읽기(date.year, date.month):
         bizno = B.등록번호_모양(r.get("등록번호"))
         memo = str(r.get("비고") or "").strip()
         try:
-            작성 = B.작성일(r, date.year, date.month)  # 비어 있으면 말일, 아버지가 넣었으면 그 날
+            작성 = B.작성일(r, date.year, date.month, date)  # 비어 있으면 고른 날짜, 아버지가 넣었으면 그 날
         except ValueError as e:
             log(f"[{r['번호']}] {r.get('상호')} - 날짜가 이상해서 패스: {e}")
             continue
@@ -1397,7 +1494,8 @@ def 장부_목록():
             continue
         todo.append({"번호": r["번호"], "작성일": 작성, "거래처명": str(r.get("상호") or "").strip(), "사업자번호": bizno,
                      "대표자": str(r.get("성명") or "").strip(), "비고": memo, "금액": int(r["금액"]),
-                     "주소": str(r.get("주소") or "").strip(), "이메일": str(r.get("이메일") or "").strip()})
+                     "주소": str(r.get("주소") or "").strip(), "이메일": str(r.get("이메일") or "").strip(),
+                     "품목": str(r.get("품목") or "").strip()})
     return date, todo
 
 
@@ -1426,7 +1524,7 @@ def 전체_발급():
         결과.append((it, 승인번호))
         이번에_발급.append(f"{it['거래처명']} {it['금액']:,}원 {it['비고']}".strip())
         try:
-            B.발급완료_표시(date.year, date.month, key, 승인번호)
+            B.발급완료_표시(date.year, date.month, key, 승인번호, it["작성일"])  # 발급한 작성일자도 장부에
         except PermissionError:
             log("⚠ 장부 엑셀이 열려 있어서 '발급완료' 표시를 못 했어요. (발급기록.txt 에는 적었어요)")
     log(f"이번에 발급한 건수: {len(결과)} / 건너뛴 것: {len(건너뛴것)}")
@@ -1654,7 +1752,7 @@ def 이미지_저장_전체(date):
     날짜들 = []
     for r in todo:
         try:
-            날짜들.append(B.작성일(r, date.year, date.month))
+            날짜들.append(B.작성일(r, date.year, date.month, date))
         except ValueError:
             날짜들.append(date)
     발급목록_조회(min(날짜들), max(날짜들), len(B.읽기(date.year, date.month)), todo[0])

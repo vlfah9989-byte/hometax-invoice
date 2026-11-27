@@ -134,7 +134,8 @@ FIELDS = [  # (이름, 설명, 꼭 써야 함)
     ("성명", "대표자 이름", False),
     ("금액", "받은 금액 (부가세 포함)", True),
     ("비고", "2공구 같은 것 (없으면 비워두세요)", False),
-    ("작성일자", "비우면 말일 · 다른 날만 11/1 처럼", False),
+    ("품목", "비우면 'N월식대' · 10월, 11월 식대 처럼 적으면 그대로", False),
+    ("작성일자", "비우면 처음 화면에서 고른 날 · 다른 날만 11/1 처럼", False),
     ("주소", "사업장 주소 (모르면 비워두세요)", False),
     ("이메일", "계산서 받을 메일 (모르면 비워두세요)", False),
 ]
@@ -164,10 +165,21 @@ class App(tk.Tk):
         return self.frame
 
     # ───────────── 처음 화면 ─────────────
+    def 고른날(self):
+        """처음 화면에서 고른 발급 날짜 (안 골랐으면 처음 값)"""
+        d = getattr(self, "sel_date", None)
+        return d or B.처음_날짜()
+
+    def 기본날(self, y, m):
+        """작성일자 칸이 빈 줄의 날짜: 고른 날짜가 그 달이면 고른 날짜, 아니면 그달 말일"""
+        d = self.고른날()
+        return d if (d.year, d.month) == (y, m) else B.말일(y, m)
+
     def home(self):
         f = self.switch()
         iy, im = B.입력할_달()
-        by, bm = B.발급할_달()
+        sel = self.고른날()
+        by, bm = sel.year, sel.month
         rows = B.읽기(by, bm)
         남은 = [r for r in rows if r.get("상태") not in ("발급완료", B.확인필요)]
         틀림 = [r for r in rows if r.get("상태") == B.확인필요]
@@ -187,11 +199,37 @@ class App(tk.Tk):
                              f"①에 들어가서 빨간 줄을 눌러 등록번호를 고쳐 주세요",
                      font=(F, fs(20), "bold"), fg="white", bg="#C00000", padx=20, pady=8
                      ).pack(pady=(0, fs(20)))
-        tk.Button(f, text=f"①  거래처 입력하기\n({im}월 식대)", font=(F, fs(28), "bold"), width=28, height=3,
+        tk.Button(f, text=f"①  거래처 입력하기\n({bm}월 식대)", font=(F, fs(28), "bold"), width=28, height=3,
                   bg="#DDEBF7", relief="ridge", command=self.input_screen).pack(pady=fs(15))
-        tk.Button(f, text=f"②  세금계산서 발급하기\n({bm}월 식대 · 발급 안 된 것 {len(남은)}건)",
+        # ② 위에: 몇월 며칠로 발급할지 (그 달 장부를 그 날짜로 발급)
+        pick = tk.Frame(f, bg="white")
+        pick.pack(pady=(fs(10), 0))
+        big = (F, fs(26), "bold")
+        tk.Label(pick, text="발급 날짜(작성일자):", font=big, bg="white").pack(side="left", padx=(0, 12))
+        self.cb_m = ttk.Combobox(pick, values=[str(i) for i in range(1, 13)], width=3, font=big,
+                                 state="readonly", justify="center")
+        self.cb_m.set(str(sel.month))
+        self.cb_m.pack(side="left")
+        tk.Label(pick, text="월", font=big, bg="white").pack(side="left", padx=(4, 12))
+        self.cb_d = ttk.Combobox(pick, width=3, font=big, state="readonly", justify="center")
+        self.cb_d.config(values=[str(i) for i in range(1, B.말일(sel.year, sel.month).day + 1)])
+        self.cb_d.set(str(sel.day))
+        self.cb_d.pack(side="left")
+        tk.Label(pick, text="일", font=big, bg="white").pack(side="left", padx=(4, 0))
+
+        def 날짜_바꿈(달바뀜=False):
+            m = int(self.cb_m.get())
+            y = B.달의_해(m)
+            끝 = B.말일(y, m).day
+            dd = 끝 if 달바뀜 else min(int(self.cb_d.get() or 끝), 끝)
+            self.sel_date = datetime.date(y, m, dd)
+            self.after(10, self.home)  # 버튼 글자(몇 월 몇 건) 다시 그림
+
+        self.cb_m.bind("<<ComboboxSelected>>", lambda e: 날짜_바꿈(달바뀜=True))
+        self.cb_d.bind("<<ComboboxSelected>>", lambda e: 날짜_바꿈())
+        tk.Button(f, text=f"②  세금계산서 발급하기\n({bm}월 {sel.day}일 · 발급 안 된 것 {len(남은)}건)",
                   font=(F, fs(28), "bold"), width=28, height=3, bg="#E2EFDA", relief="ridge",
-                  command=self.issue).pack(pady=fs(15))
+                  command=self.issue).pack(pady=fs(10))
         bottom = tk.Frame(f, bg="white")
         bottom.pack(pady=fs(30))
         tk.Button(bottom, text="📁 지난 기록 폴더 열기", font=MID, bg="white", relief="flat", fg="#2F5597",
@@ -324,7 +362,8 @@ class App(tk.Tk):
     # ───────────── 입력 화면 ─────────────
     def input_screen(self):
         f = self.switch()
-        self.y, self.m = B.입력할_달()
+        sel = self.고른날()
+        self.y, self.m = sel.year, sel.month  # 처음 화면에서 고른 달
         self.rows = B.읽기(self.y, self.m)
         self.known = B.예전_거래처()
         self.editing = None  # 수정 중인 줄 번호(0부터)
@@ -366,6 +405,8 @@ class App(tk.Tk):
             hl.grid(row=i, column=2, sticky="w")
             if name == "작성일자":
                 self.date_hint = hl
+            if name == "품목":
+                self.item_hint = hl
             self.ent[name] = e
         # 상호 추천 목록 (상호 칸 바로 아래에 뜨고, 커서를 뺏지 않음)
         self.sugg = tk.Listbox(f, font=MID, height=5, bg="#FFFBE6", relief="solid", bd=1,
@@ -535,7 +576,7 @@ class App(tk.Tk):
             d = B.날짜_읽기(v, self.y, self.m)
         except ValueError:
             return  # 저장할 때 알려줌
-        self.set("작성일자", "" if d == B.말일(self.y, self.m) else f"{d.month}/{d.day}")
+        self.set("작성일자", f"{d.month}/{d.day}")
 
     def set(self, k, v):
         e = self.ent[k]
@@ -558,13 +599,14 @@ class App(tk.Tk):
         self.tree.tag_configure("bad", foreground="white", background="#C00000")
         self.tree.tag_configure("done", foreground="#006100")
         self.tree.tag_configure("otherday", background="#FFF2CC")
-        끝 = B.말일(self.y, self.m)
-        self.date_hint.config(text=f"비우면 {끝.month}월 {끝.day}일 · 다른 날만 11/1 처럼")
+        끝 = self.기본날(self.y, self.m)
+        self.item_hint.config(text=f"비우면 '{self.m}월식대' · 10월, 11월 식대 처럼 적으면 그대로")
+        self.date_hint.config(text=f"비우면 {끝.month}월 {끝.day}일(처음 화면에서 고른 날) · 다른 날만 11/1 처럼")
         for i, r in enumerate(self.rows):
             st = r.get("상태") or "발급 전"
             tag = ("bad",) if st == B.확인필요 else ("done",) if st == "발급완료" else ()
             try:
-                d = B.작성일(r, self.y, self.m)
+                d = B.작성일(r, self.y, self.m, 끝)
                 날 = f"{d.month}/{d.day}"
             except ValueError:
                 d, 날 = None, "⚠ " + str(r.get("작성일자"))
@@ -741,21 +783,22 @@ class App(tk.Tk):
 
     # ───────────── 발급 ─────────────
     def issue(self):
-        by, bm = B.발급할_달()
+        sel = self.고른날()
+        by, bm = sel.year, sel.month
         남은 = [r for r in B.읽기(by, bm) if r.get("상태") not in ("발급완료", B.확인필요)]
         if not 남은:
             return messagebox.showinfo("발급", f"{bm}월 식대는 발급할 게 없어요.\n(다 발급했거나 입력한 게 없어요)")
         def 날(r):
             try:
-                d = B.작성일(r, by, bm)
+                d = B.작성일(r, by, bm, sel)
             except ValueError:
                 return "  (⚠ 날짜 확인)"
             return f"  ({d.month}/{d.day})"
-        lst = "\n".join(f"  · {r['상호']}  {int(r['금액']):,}원 {r.get('비고', '')}{날(r)}" for r in 남은[:12])
-        if not messagebox.askyesno("세금계산서 발급", f"{bm}월 식대 {len(남은)}건을 발급합니다.\n\n{lst}\n\n"
+        lst = "\n".join(f"  · {r['상호']}  {int(r['금액']):,}원 {r.get('비고', '')}{날(r)}  [{r.get('품목') or f'{bm}월식대'}]" for r in 남은[:12])
+        if not messagebox.askyesno("세금계산서 발급", f"{bm}월 식대 {len(남은)}건을 발급합니다.\n(작성일자 {sel.month}월 {sel.day}일)\n\n{lst}\n\n"
                                    "곧 휴대폰 카카오톡으로 인증 요청이 갑니다.\n시작할까요?"):
             return
-        subprocess.Popen(발급_명령(), cwd=HERE,
+        subprocess.Popen(발급_명령("--날짜", sel.strftime("%Y-%m-%d")), cwd=HERE,
                          creationflags=subprocess.CREATE_NEW_CONSOLE)
         self.iconify()
 
